@@ -12,12 +12,10 @@ constexpr size_t aligned_size = 4096;
 
 ss::sstring fname_output = "/root/seastar-starter/simple_output.txt";
 ss::sstring fname_input = "/root/seastar-starter/simple_input.txt";
-ss::temporary_buffer<char> buf = ss::temporary_buffer<char>::aligned(aligned_size, aligned_size);
 
-
-ss::future<> write_to_file(ss::sstring fname) {
+ss::future<> write_to_file(ss::temporary_buffer<char>& buf, ss::sstring fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
-        [](ss::file f) mutable {
+        [&buf](ss::file f) mutable {
             std::cout << "opened file\n";
             return f.dma_write<char>(0, buf.get(), aligned_size).then([](size_t unused){
                 std::cout << "I wrote\n" << std::flush;
@@ -25,11 +23,11 @@ ss::future<> write_to_file(ss::sstring fname) {
     });
 }
 
-ss::future<> read_from_file(const ss::sstring& fname){
+ss::future<> read_from_file(ss::temporary_buffer<char>& buf, const ss::sstring& fname){
     return with_file(ss::open_file_dma(fname, ss::open_flags::ro),
-        [](ss::file& f) mutable {
+        [&buf](ss::file& f) mutable {
             std::cout << "opened file to read\n";
-            return f.dma_read<char>(0, buf.get_write(), aligned_size).then([](size_t unused){
+            return f.dma_read<char>(0, buf.get_write(), aligned_size).then([&buf](size_t unused){
                 std::cout << "I read\n";
                 for (int i = 0; i < aligned_size; ++i) {
                     std::cout << buf[i];
@@ -43,8 +41,11 @@ int main(int argc, char** argv) {
     seastar::app_template app;
     try {
         app.run(argc, argv, []{
-            return read_from_file(fname_input).then([]{
-                return write_to_file(fname_output);
+            return ss::do_with(ss::temporary_buffer<char>::aligned(aligned_size, aligned_size),
+                [](auto& buf) {
+                    return read_from_file(buf, fname_input).then([&buf]{
+                        return write_to_file(buf, fname_output);
+                });
             });
         });
     } catch(...) {
