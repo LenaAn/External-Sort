@@ -10,9 +10,8 @@ namespace ss = seastar;
 constexpr size_t aligned_size = 4096;
 
 
-std::string str(aligned_size, 'x');
-ss::sstring fname = "/root/seastar-starter/simple_output.txt";
-const char * to_write = str.c_str();
+ss::sstring fname_output = "/root/seastar-starter/simple_output.txt";
+ss::sstring fname_input = "/root/seastar-starter/simple_input.txt";
 ss::temporary_buffer<char> buf = ss::temporary_buffer<char>::aligned(aligned_size, aligned_size);
 
 
@@ -20,7 +19,7 @@ ss::future<> write_to_file(ss::sstring fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
         [](ss::file f) mutable {
             std::cout << "opened file\n";
-            return f.dma_write<char>(0, to_write, aligned_size).then([](size_t unused){
+            return f.dma_write<char>(0, buf.get(), aligned_size).then([](size_t unused){
                 std::cout << "I wrote\n" << std::flush;
             });
     });
@@ -44,7 +43,9 @@ int main(int argc, char** argv) {
     seastar::app_template app;
     try {
         app.run(argc, argv, []{
-            return read_from_file(fname);
+            return read_from_file(fname_input).then([]{
+                return write_to_file(fname_output);
+            });
         });
     } catch(...) {
         std::cerr << "Failed to start application: "
