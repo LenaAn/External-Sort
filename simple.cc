@@ -11,17 +11,34 @@ namespace ss = seastar;
 
 constexpr size_t aligned_size = 4096;
 constexpr size_t record_size = 4*aligned_size;
-constexpr bool debug = true;
+constexpr bool debug = false;
 
 
 ss::sstring fname_output = "/root/seastar-starter/simple_output.txt";
 ss::sstring fname_input = "/root/seastar-starter/simple_input.txt";
 
-ss::future<> write_to_file(int& pos, ss::temporary_buffer<char>& buf, ss::sstring fname) {
+ss::future<> write_to_file(int& pos, std::vector<std::string>& chunks, ss::sstring fname) {
+    if (debug) {
+        std::cout << "chunks in write_to_file:\n";
+        for (auto &chunk: chunks) {
+            std::cout << "chunk: " << chunk << "\n";
+        }
+        std::cout << "\n";
+    }
+
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
-        [&buf, &pos](ss::file f) mutable {
+        [&chunks, &pos](ss::file f) mutable {
             std::cout << "opened file\n";
-            return f.dma_write<char>(pos*aligned_size, buf.get(), record_size).then([&pos](size_t unused){
+            if (debug) {
+                std::cout << "chunks after file open:\n";
+                for (auto &chunk: chunks) {
+                    std::cout << "chunk: " << chunk << "\n";
+                }
+                std::cout << "\n";
+            }
+
+            // todo: in loop write all chunks
+            return f.dma_write<char>(pos*aligned_size, chunks[0].c_str(), aligned_size).then([&pos](size_t unused){
                 std::cout << "I wrote\n" << std::flush;
             });
     });
@@ -36,8 +53,12 @@ std::vector<std::string> sort_record(ss::temporary_buffer<char>& record) {
         chunks_by4k.emplace_back(std::string(record.get() + offset, aligned_size));
     }
 
-    for (auto &chunk: chunks_by4k) {
-        std::cout << "chunk: " << chunk << "\n";
+    if (debug){
+        std::cout << "chunks in sort_records:\n";
+        for (auto &chunk: chunks_by4k) {
+            std::cout << "chunk: " << chunk << "\n";
+        }
+        std::cout << "\n";
     }
     return chunks_by4k;
 
@@ -73,9 +94,12 @@ int main(int argc, char** argv) {
                         [&buf](int& pos) {
                             std::cout << "pos: " << pos << "\n";
                             return read_from_file(pos, buf, fname_input).then([&buf, &pos] {
-                                auto chunks = sort_record(buf);
-                                // todo: write to file by chunks
-                                return write_to_file(pos, buf, fname_output);
+                                return ss::do_with(
+                                    sort_record(buf),
+                                    [&pos](auto& chunks){
+                                        return write_to_file(pos, chunks, fname_output);
+                                    }
+                                );
                             });
                         }
                     );
