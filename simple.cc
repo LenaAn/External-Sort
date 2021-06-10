@@ -32,9 +32,9 @@ constexpr bool debug = false;
 
 
 ss::sstring fname_output = "/root/seastar-starter/simple_output.txt";
-ss::sstring fname_input = "/root/seastar-starter/simple_input.txt";
+ss::sstring fname_input = "/root/seastar-starter/input.txt";
 
-ss::future<> write_chunk(int& record_pos, const int& i, std::string& chunk, ss::sstring fname) {
+ss::future<> write_chunk(size_t& record_pos, const int& i, std::string& chunk, ss::sstring fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
         [&](ss::file f) mutable {
             return f.dma_write<char>(record_pos + i*aligned_size, chunk.c_str(), aligned_size).then([&](size_t unused){
@@ -46,7 +46,7 @@ ss::future<> write_chunk(int& record_pos, const int& i, std::string& chunk, ss::
 }
 
 // todo: move vector of strings??
-ss::future<> write_record(int& record_pos, std::vector<std::string>& chunks, ss::sstring fname) {
+ss::future<> write_record(size_t& record_pos, std::vector<std::string>& chunks, ss::sstring fname) {
     return ss::do_with(
         int(0),
         [&](auto& i){
@@ -87,10 +87,10 @@ std::vector<std::string> sort_chunks(size_t& count_read, ss::temporary_buffer<ch
 
 }
 
-ss::future<size_t> read_record(int& record_pos, ss::temporary_buffer<char>& buf, const ss::sstring& fname){
+ss::future<size_t> read_record(size_t& record_pos, ss::temporary_buffer<char>& buf, const ss::sstring& fname){
     return with_file(ss::open_file_dma(fname, ss::open_flags::ro),
         [&](ss::file& f) mutable {
-            std::cout << "opened file to read\n";
+            std::cout << "opened file, gonna read on pos: " << record_pos << "\n";
             return f.dma_read<char>(record_pos, buf.get_write(), record_size).then([](size_t count){
                 std::cout << "I've read " << count << "\n";
                 return ss::make_ready_future<size_t>(count);
@@ -106,24 +106,31 @@ int main(int argc, char** argv) {
             std::cout << "I have " << RAM_AVAILABLE << " RAM\n";
             return ss::do_with(
                 ss::temporary_buffer<char>::aligned(aligned_size, record_size),
-                int(0),
+                size_t(0),
                 [](auto& buf, auto& record_pos){
                     return ss::repeat([&](){
-                        return read_record(record_pos, buf, fname_input).then([&](auto count_read){
-                            if (count_read == 0) {
-                                return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
-                            } else {
-                                return ss::do_with(
-                                    sort_chunks(count_read, buf),
-                                    [&](auto& chunks){
-                                        return write_record(record_pos, chunks, fname_output).then([&]{
-                                            record_pos += count_read;
+                        return read_record(record_pos, buf, fname_input).then([&](auto count_read_ext){
+                            return ss::do_with(
+                                size_t(count_read_ext),
+                                [&](auto& count_read){
+                                    std::cout << "count_read: " << count_read << "\n";
+                                    if (count_read == 0) {
+                                        return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
+                                    } else {
+                                        return ss::do_with(
+                                            sort_chunks(count_read, buf),
+                                            [&](auto& chunks){
+                                                return write_record(record_pos, chunks, fname_output).then([&]{
+                                                    record_pos += count_read;
+                                                    std::cout << "new record_pos: " << record_pos << "\n";
+                                                });
+                                            }
+                                        ).then([]{
+                                            return ss::stop_iteration::no;
                                         });
                                     }
-                                ).then([]{
-                                    return ss::stop_iteration::no;
-                                });
-                            }
+                                }
+                            );
                         });
                     });
                 }
