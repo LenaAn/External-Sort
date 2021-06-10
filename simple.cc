@@ -2,6 +2,19 @@
 #include <seastar/core/reactor.hh>
 #include <seastar/core/sleep.hh>
 #include <boost/iterator/counting_iterator.hpp>
+#include <seastar/core/aligned_buffer.hh>
+#include <seastar/core/file.hh>
+#include <seastar/core/fstream.hh>
+#include <seastar/core/seastar.hh>
+#include <seastar/core/sstring.hh>
+#include <seastar/core/temporary_buffer.hh>
+#include <seastar/core/loop.hh>
+#include <seastar/util/log.hh>
+#include <seastar/util/tmp_file.hh>
+#include <seastar/core/file.hh>
+#include <seastar/core/iostream.hh>
+#include <seastar/core/shared_ptr.hh>
+#include <seastar/core/internal/api-level.hh>
 
 #include <iostream>
 #include <stdexcept>
@@ -10,57 +23,30 @@
 namespace ss = seastar;
 
 constexpr size_t aligned_size = 4096;
-constexpr size_t record_size = 4*aligned_size;
+constexpr size_t chunks_in_record = 4;
+constexpr size_t record_size = chunks_in_record*aligned_size;
 constexpr bool debug = false;
 
 
 ss::sstring fname_output = "/root/seastar-starter/simple_output.txt";
 ss::sstring fname_input = "/root/seastar-starter/simple_input.txt";
 
-ss::future<> write_to_file(int& pos, std::vector<std::string>& chunks, ss::sstring fname) {
-    if (debug) {
-        std::cout << "chunks in write_to_file:\n";
-        for (auto &chunk: chunks) {
-            std::cout << "chunk: " << chunk << "\n";
-        }
-        std::cout << "\n";
-    }
-
+ss::future<> write_to_file(const int& i, std::string& chunk, ss::sstring fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
-        [&chunks, &pos](ss::file f) mutable {
-            std::cout << "opened file\n";
-            if (debug) {
-                std::cout << "chunks after file open:\n";
-                for (auto &chunk: chunks) {
-                    std::cout << "chunk: " << chunk << "\n";
-                }
-                std::cout << "\n";
-            }
-
-            // todo: in loop write all chunks
-            return f.dma_write<char>(pos*aligned_size, chunks[0].c_str(), aligned_size).then([&pos](size_t unused){
+        [&](ss::file f) mutable {
+            return f.dma_write<char>(i*aligned_size, chunk.c_str(), aligned_size).then([&](size_t unused){
                 std::cout << "I wrote\n" << std::flush;
             });
     });
 }
 
-std::vector<std::string> sort_record(ss::temporary_buffer<char>& record) {
-    std::vector<std::string> chunks_by4k;
-    if (debug) {
-        std::cout << "record.size(): " << record.size() << "\n";
-    }
+// todo: move record?
+std::vector<std::string> split_record_into_chunks(ss::temporary_buffer<char>& record) {
+    std::vector<std::string> chunks;
     for (int offset =0; offset + aligned_size <= record.size(); offset+=aligned_size ){
-        chunks_by4k.emplace_back(std::string(record.get() + offset, aligned_size));
+        chunks.emplace_back(std::string(record.get() + offset, aligned_size));
     }
-
-    if (debug){
-        std::cout << "chunks in sort_records:\n";
-        for (auto &chunk: chunks_by4k) {
-            std::cout << "chunk: " << chunk << "\n";
-        }
-        std::cout << "\n";
-    }
-    return chunks_by4k;
+    return chunks;
 
 }
 
@@ -68,15 +54,7 @@ ss::future<> read_from_file(int& pos, ss::temporary_buffer<char>& buf, const ss:
     return with_file(ss::open_file_dma(fname, ss::open_flags::ro),
         [&buf, &pos](ss::file& f) mutable {
             std::cout << "opened file to read\n";
-            return f.dma_read<char>(pos*aligned_size, buf.get_write(), record_size).then([&buf, &pos](size_t unused){
-                if (debug) {
-                    std::cout << "I read\n";
-                    for (int i = 0; i < record_size; ++i) {
-                        std::cout << buf[i];
-                    }
-                    std::cout << "\n";
-                }
-            });
+            return f.dma_read<char>(pos, buf.get_write(), record_size).discard_result();
         });
 }
 
@@ -86,18 +64,28 @@ int main(int argc, char** argv) {
     try {
         app.run(argc, argv, []{
             return ss::do_with(
+                int(0),
                 ss::temporary_buffer<char>::aligned(aligned_size, record_size),
                 std::vector<int>{0},
-                [](auto& buf, auto & range){
+                [](auto& i, auto& buf, auto & range){
                     return ss::do_for_each(
                         range,
-                        [&buf](int& pos) {
-                            std::cout << "pos: " << pos << "\n";
-                            return read_from_file(pos, buf, fname_input).then([&buf, &pos] {
+                        [&buf, &i](int& record_pos) {
+                            std::cout << "record_pos: " << record_pos << "\n";
+                            return read_from_file(record_pos, buf, fname_input).then([&] {
                                 return ss::do_with(
-                                    sort_record(buf),
-                                    [&pos](auto& chunks){
-                                        return write_to_file(pos, chunks, fname_output);
+                                    split_record_into_chunks(buf),
+                                    [&record_pos, &i](auto& chunks){
+                                        return ss::do_until(
+                                            [&]{
+                                                return i == chunks_in_record;
+                                            },
+                                            [&]{
+                                                return write_to_file(i, chunks[i], fname_output).then([&]{
+                                                    ++i;
+                                                });
+                                            }
+                                        );
                                     }
                                 );
                             });
