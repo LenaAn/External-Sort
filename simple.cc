@@ -23,20 +23,24 @@
 namespace ss = seastar;
 
 constexpr size_t aligned_size = 4096;
+uint64_t RAM_AVAILABLE = ss::memory::stats().total_memory();
+
 // todo: recalculate based on RAM available
-constexpr size_t chunks_in_record = 4;
-constexpr size_t record_size = chunks_in_record*aligned_size;
+size_t chunks_in_record = RAM_AVAILABLE / aligned_size;
+size_t record_size = chunks_in_record*aligned_size;
 constexpr bool debug = false;
 
 
 ss::sstring fname_output = "/root/seastar-starter/simple_output.txt";
-ss::sstring fname_input = "/root/seastar-starter/simple_input.txt";
+ss::sstring fname_input = "/root/seastar-starter/input.txt";
 
 ss::future<> write_chunk(int& record_pos, const int& i, std::string& chunk, ss::sstring fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
         [&](ss::file f) mutable {
             return f.dma_write<char>(record_pos*record_size + i*aligned_size, chunk.c_str(), aligned_size).then([&](size_t unused){
-                std::cout << "I wrote\n" << std::flush;
+                if (debug){
+                    std::cout << "I wrote\n" << std::flush;
+                }
             });
     });
 }
@@ -55,7 +59,9 @@ ss::future<> write_record(int& record_pos, std::vector<std::string>& chunks, ss:
                         ++i;
                     });
                 }
-            );
+            ).then([]{
+                std::cout << "I wrote a record\n";
+            });
         }
     );
 }
@@ -69,9 +75,11 @@ std::vector<std::string> sort_chunks(ss::temporary_buffer<char>& record) {
     }
     // todo: make sure it's us-ascii order
     std::sort(chunks.begin(), chunks.end());
-    std::cout << "sorted chunks:\n";
-    for (auto& chunk : chunks) {
-        std::cout << chunk << "\n";
+    if (debug) {
+        std::cout << "sorted chunks:\n";
+        for (auto& chunk : chunks) {
+            std::cout << chunk << "\n";
+        }
     }
     return chunks;
 
