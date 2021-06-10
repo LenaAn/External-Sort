@@ -41,10 +41,16 @@ ss::future<> write_to_file(const int& i, std::string& chunk, ss::sstring fname) 
 }
 
 // todo: move record?
-std::vector<std::string> split_record_into_chunks(ss::temporary_buffer<char>& record) {
+std::vector<std::string> sort_chunks(ss::temporary_buffer<char>& record) {
     std::vector<std::string> chunks;
     for (int offset =0; offset + aligned_size <= record.size(); offset+=aligned_size ){
         chunks.emplace_back(std::string(record.get() + offset, aligned_size));
+    }
+    // todo: make sure it's us-ascii order
+    std::sort(chunks.begin(), chunks.end());
+    std::cout << "sorted chunks:\n";
+    for (auto& chunk : chunks) {
+        std::cout << chunk << "\n";
     }
     return chunks;
 
@@ -74,7 +80,8 @@ int main(int argc, char** argv) {
                             std::cout << "record_pos: " << record_pos << "\n";
                             return read_from_file(record_pos, buf, fname_input).then([&] {
                                 return ss::do_with(
-                                    split_record_into_chunks(buf),
+                                    sort_chunks(buf),
+                                    // todo: move into separate function
                                     [&record_pos, &i](auto& chunks){
                                         return ss::do_until(
                                             [&]{
