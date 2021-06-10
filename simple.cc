@@ -37,7 +37,7 @@ ss::sstring fname_input = "/root/seastar-starter/simple_input.txt";
 ss::future<> write_chunk(int& record_pos, const int& i, std::string& chunk, ss::sstring fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
         [&](ss::file f) mutable {
-            return f.dma_write<char>(record_pos*record_size + i*aligned_size, chunk.c_str(), aligned_size).then([&](size_t unused){
+            return f.dma_write<char>(record_pos + i*aligned_size, chunk.c_str(), aligned_size).then([&](size_t unused){
                 if (debug){
                     std::cout << "I wrote\n" << std::flush;
                 }
@@ -87,11 +87,11 @@ std::vector<std::string> sort_chunks(size_t& count_read, ss::temporary_buffer<ch
 
 }
 
-ss::future<size_t> read_record(int& i_rec, ss::temporary_buffer<char>& buf, const ss::sstring& fname){
+ss::future<size_t> read_record(int& record_pos, ss::temporary_buffer<char>& buf, const ss::sstring& fname){
     return with_file(ss::open_file_dma(fname, ss::open_flags::ro),
         [&](ss::file& f) mutable {
             std::cout << "opened file to read\n";
-            return f.dma_read<char>(i_rec*record_size, buf.get_write(), record_size).then([](size_t count){
+            return f.dma_read<char>(record_pos, buf.get_write(), record_size).then([](size_t count){
                 std::cout << "I've read " << count << "\n";
                 return ss::make_ready_future<size_t>(count);
             });
@@ -103,25 +103,29 @@ int main(int argc, char** argv) {
     seastar::app_template app;
     try {
         app.run(argc, argv, []{
-            std::cout << "I have " << RAM_AVAILABLE << "ram\n";
+            std::cout << "I have " << RAM_AVAILABLE << " RAM\n";
             return ss::do_with(
                 ss::temporary_buffer<char>::aligned(aligned_size, record_size),
-                std::vector<int>{0, 1},
-                [](auto& buf, auto & range){
-                    return ss::do_for_each(
-                        range,
-                        [&buf](int& record_pos) {
-                            std::cout << "record_pos: " << record_pos << "\n";
-                            return read_record(record_pos, buf, fname_input).then([&](auto count_read) {
+                int(0),
+                [](auto& buf, auto& record_pos){
+                    return ss::repeat([&](){
+                        return read_record(record_pos, buf, fname_input).then([&](auto count_read){
+                            if (count_read == 0) {
+                                return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
+                            } else {
                                 return ss::do_with(
                                     sort_chunks(count_read, buf),
                                     [&](auto& chunks){
-                                        return write_record(record_pos, chunks, fname_output);
+                                        return write_record(record_pos, chunks, fname_output).then([&]{
+                                            record_pos += count_read;
+                                        });
                                     }
-                                );
-                            });
-                        }
-                    );
+                                ).then([]{
+                                    return ss::stop_iteration::no;
+                                });
+                            }
+                        });
+                    });
                 }
             );
         });
