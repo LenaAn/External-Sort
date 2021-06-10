@@ -31,7 +31,7 @@ constexpr bool debug = false;
 ss::sstring fname_output = "/root/seastar-starter/simple_output.txt";
 ss::sstring fname_input = "/root/seastar-starter/simple_input.txt";
 
-ss::future<> write_to_file(const int& i, std::string& chunk, ss::sstring fname) {
+ss::future<> write_chunk(const int& i, std::string& chunk, ss::sstring fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
         [&](ss::file f) mutable {
             return f.dma_write<char>(i*aligned_size, chunk.c_str(), aligned_size).then([&](size_t unused){
@@ -39,6 +39,26 @@ ss::future<> write_to_file(const int& i, std::string& chunk, ss::sstring fname) 
             });
     });
 }
+
+// todo: move vector of strings??
+ss::future<> write_record(std::vector<std::string>& chunks, ss::sstring fname) {
+    return ss::do_with(
+        int(0),
+        [&](auto& i){
+            return ss::do_until(
+                [&]{
+                    return i == chunks_in_record;
+                },
+                [&]{
+                    return write_chunk(i, chunks[i], fname_output).then([&]{
+                        ++i;
+                    });
+                }
+            );
+        }
+    );
+}
+
 
 // todo: move record?
 std::vector<std::string> sort_chunks(ss::temporary_buffer<char>& record) {
@@ -70,29 +90,18 @@ int main(int argc, char** argv) {
     try {
         app.run(argc, argv, []{
             return ss::do_with(
-                int(0),
                 ss::temporary_buffer<char>::aligned(aligned_size, record_size),
                 std::vector<int>{0},
-                [](auto& i, auto& buf, auto & range){
+                [](auto& buf, auto & range){
                     return ss::do_for_each(
                         range,
-                        [&buf, &i](int& record_pos) {
+                        [&buf](int& record_pos) {
                             std::cout << "record_pos: " << record_pos << "\n";
                             return read_from_file(record_pos, buf, fname_input).then([&] {
                                 return ss::do_with(
                                     sort_chunks(buf),
-                                    // todo: move into separate function
-                                    [&record_pos, &i](auto& chunks){
-                                        return ss::do_until(
-                                            [&]{
-                                                return i == chunks_in_record;
-                                            },
-                                            [&]{
-                                                return write_to_file(i, chunks[i], fname_output).then([&]{
-                                                    ++i;
-                                                });
-                                            }
-                                        );
+                                    [&](auto& chunks){
+                                        return write_record(chunks, fname_output);
                                     }
                                 );
                             });
