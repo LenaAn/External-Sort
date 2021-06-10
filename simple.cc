@@ -23,16 +23,16 @@
 namespace ss = seastar;
 
 constexpr size_t aligned_size = 4096;
-uint64_t RAM_AVAILABLE = ss::memory::stats().total_memory();
+// todo: I believe I can actually use less without overhelming system
+uint64_t RAM_AVAILABLE = ss::memory::stats().free_memory();
 
-// todo: recalculate based on RAM available
 size_t chunks_in_record = RAM_AVAILABLE / aligned_size;
 size_t record_size = chunks_in_record*aligned_size;
 constexpr bool debug = false;
 
 
 ss::sstring fname_output = "/root/seastar-starter/simple_output.txt";
-ss::sstring fname_input = "/root/seastar-starter/input.txt";
+ss::sstring fname_input = "/root/seastar-starter/simple_input.txt";
 
 ss::future<> write_chunk(int& record_pos, const int& i, std::string& chunk, ss::sstring fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
@@ -52,7 +52,8 @@ ss::future<> write_record(int& record_pos, std::vector<std::string>& chunks, ss:
         [&](auto& i){
             return ss::do_until(
                 [&]{
-                    return i == chunks_in_record;
+                    // todo: store chunks.size() in a variable;
+                    return i == chunks.size();
                 },
                 [&]{
                     return write_chunk(record_pos, i, chunks[i], fname_output).then([&]{
@@ -68,13 +69,14 @@ ss::future<> write_record(int& record_pos, std::vector<std::string>& chunks, ss:
 
 
 // todo: move record?
-std::vector<std::string> sort_chunks(ss::temporary_buffer<char>& record) {
+std::vector<std::string> sort_chunks(size_t& count_read, ss::temporary_buffer<char>& record) {
     std::vector<std::string> chunks;
-    for (int offset =0; offset + aligned_size <= record.size(); offset+=aligned_size ){
+    for (int offset =0; offset + aligned_size <= count_read; offset+=aligned_size ){
         chunks.emplace_back(std::string(record.get() + offset, aligned_size));
     }
     // todo: make sure it's us-ascii order
     std::sort(chunks.begin(), chunks.end());
+    std::cout << "I have " << chunks.size() << " chunks\n";
     if (debug) {
         std::cout << "sorted chunks:\n";
         for (auto& chunk : chunks) {
@@ -85,11 +87,14 @@ std::vector<std::string> sort_chunks(ss::temporary_buffer<char>& record) {
 
 }
 
-ss::future<> read_record(int& i_rec, ss::temporary_buffer<char>& buf, const ss::sstring& fname){
+ss::future<size_t> read_record(int& i_rec, ss::temporary_buffer<char>& buf, const ss::sstring& fname){
     return with_file(ss::open_file_dma(fname, ss::open_flags::ro),
         [&](ss::file& f) mutable {
             std::cout << "opened file to read\n";
-            return f.dma_read<char>(i_rec*record_size, buf.get_write(), record_size).discard_result();
+            return f.dma_read<char>(i_rec*record_size, buf.get_write(), record_size).then([](size_t count){
+                std::cout << "I've read " << count << "\n";
+                return ss::make_ready_future<size_t>(count);
+            });
         });
 }
 
@@ -98,6 +103,7 @@ int main(int argc, char** argv) {
     seastar::app_template app;
     try {
         app.run(argc, argv, []{
+            std::cout << "I have " << RAM_AVAILABLE << "ram\n";
             return ss::do_with(
                 ss::temporary_buffer<char>::aligned(aligned_size, record_size),
                 std::vector<int>{0, 1},
@@ -106,11 +112,10 @@ int main(int argc, char** argv) {
                         range,
                         [&buf](int& record_pos) {
                             std::cout << "record_pos: " << record_pos << "\n";
-                            return read_record(record_pos, buf, fname_input).then([&] {
+                            return read_record(record_pos, buf, fname_input).then([&](auto count_read) {
                                 return ss::do_with(
-                                    sort_chunks(buf),
+                                    sort_chunks(count_read, buf),
                                     [&](auto& chunks){
-                                        // todo: account for record pos
                                         return write_record(record_pos, chunks, fname_output);
                                     }
                                 );
