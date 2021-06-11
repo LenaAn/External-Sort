@@ -24,8 +24,6 @@ ss::sstring fname_sorted = "/root/seastar-starter/sorted_output.txt";
 
 constexpr bool debug = false;
 
-// todo: write struct
-
 ss::future<size_t> read_chunk(size_t& record_pos, ss::temporary_buffer<char>& buf, const ss::sstring& fname){
     return with_file(ss::open_file_dma(fname, ss::open_flags::ro),
         [&](ss::file& f) mutable {
@@ -48,10 +46,10 @@ ss::future<> write_chunk(std::string& chunk, ss::sstring fname) {
     });
 }
 
-ss::future<> convert_to_string(std::vector<ss::temporary_buffer<char>>& buffers, std::vector<std::string>& chunks){
-    // todo: note: not optimal
+std::vector<std::string> convert_to_string(std::vector<ss::temporary_buffer<char>>& buffers){
+    std::vector<std::string> chunks;
     for (int i = 0; i < 3; ++i) {
-        chunks[i] = std::string(buffers[i].get(), aligned_size);
+        chunks.emplace_back(std::string(buffers[i].get(), aligned_size));
     }
 
     if (debug){
@@ -61,7 +59,7 @@ ss::future<> convert_to_string(std::vector<ss::temporary_buffer<char>>& buffers,
         }
         std::cout << "\n";
     }
-    return ss::make_ready_future();
+    return chunks;
 }
 
 ss::future<> merge_records(std::string& min_chunk, std::vector<std::string>& chunks, const ss::sstring& output_fname){
@@ -102,15 +100,12 @@ int main(int argc, char** argv) {
                             return ss::stop_iteration::no;
                         });
                     }).then([&](){
-                        // todo: maybe can do without passing vector of strings?
                         return ss::do_with(
                             std::string(),
-                            std::vector<std::string>(buffers.size()),
+                            convert_to_string(buffers),
                             [&](auto& min_chunk, auto& chunks){
-                                return convert_to_string(buffers, chunks).then([&]{
-                                    std::cout << "gonna merge 'em all!\n";
-                                    return merge_records(min_chunk, chunks, fname_sorted);
-                                });
+                                std::cout << "gonna merge 'em all!\n";
+                                return merge_records(min_chunk, chunks, fname_sorted);
                             }
                         );
                     });
