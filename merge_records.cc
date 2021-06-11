@@ -65,20 +65,6 @@ std::vector<std::string> convert_to_string(std::vector<ss::temporary_buffer<char
     return chunks;
 }
 
-ss::future<> write_min(size_t& i_record_to_update, int& iter_count, std::string& min_chunk, std::vector<std::string>& chunks, const ss::sstring& output_fname){
-    i_record_to_update = 0;
-    min_chunk = chunks[i_record_to_update];
-
-    for (size_t i = 0; i < chunks.size(); ++i){
-        if (min_chunk.compare(chunks[i]) > 0){
-            i_record_to_update = i;
-            min_chunk = chunks[i];
-        }
-    }
-    // std::cout << "min_chunk: " << min_chunk << "\n";
-    return write_chunk(iter_count, min_chunk, output_fname);
-}
-
 ss::future<> upload_first_chunks_of_records(std::vector<ss::temporary_buffer<char>>& buffers) {
     return ss::do_with(
         size_t(0),
@@ -96,19 +82,47 @@ ss::future<> upload_first_chunks_of_records(std::vector<ss::temporary_buffer<cha
     );
 }
 
-ss::future<> upload_new_value(std::vector<std::string>& chunks, size_t& i_record_to_update){
-    std::cout << "i_record_to_update: " << i_record_to_update << "\n";
-    return ss::make_ready_future();
+ss::future<> write_min(size_t& i_record_to_update, int& iter_count, std::string& min_chunk, std::vector<std::string>& chunks, const ss::sstring& output_fname){
+    i_record_to_update = 0;
+    min_chunk = chunks[i_record_to_update];
+
+    for (size_t i = 0; i < chunks.size(); ++i){
+        if (min_chunk.compare(chunks[i]) > 0){
+            i_record_to_update = i;
+            min_chunk = chunks[i];
+        }
+    }
+    // std::cout << "min_chunk: " << min_chunk << "\n";
+    return write_chunk(iter_count, min_chunk, output_fname);
 }
 
-ss::future<> write_min(std::vector<std::string>& chunks){
-    std::vector<size_t> current_pos_in_record(number_of_records_to_merge, 0);
+ss::future<> upload_new_value(std::vector<size_t>& positions, std::vector<std::string>& chunks, size_t& i_record_to_update){
+    std::cout << "i_record_to_update: " << i_record_to_update << "\n";
+    return ss::do_with(
+        ss::temporary_buffer<char>::aligned(aligned_size, aligned_size),
+        [&](auto& buf){
+            return with_file(ss::open_file_dma(fname_records, ss::open_flags::ro),
+                [&](ss::file& f) mutable {
+                    std::cout << "gonna upload new chunk for record: " << i_record_to_update << "\n";
+                    return f.dma_read<char>(i_record_to_update * record_size + positions[i_record_to_update] * aligned_size, buf.get_write(), aligned_size).then([&](size_t count){
+                        // std::cout << "I've uploaded " << buf.get() << "\n";
+                        chunks[i_record_to_update] = std::string(buf.get(), aligned_size);
+                    });
+                }
+            );
+        }
+    );
+}
+
+ss::future<> sort_records(std::vector<std::string>& chunks){
+    std::vector<size_t> positions(number_of_records_to_merge, 0);
 
     return ss::do_with(
+        std::move(positions),
         size_t(0),
         int(0),
         std::string(),
-        [&](auto& i_record_to_update, auto& iter_count, auto& min_chunk){
+        [&](auto& positions, auto& i_record_to_update, auto& iter_count, auto& min_chunk){
             return ss::repeat([&](){
                 // todo: get rid of iter_count
                 if (iter_count == 3) {
@@ -116,7 +130,9 @@ ss::future<> write_min(std::vector<std::string>& chunks){
                 } else {
                     std::cout << "gonna merge 'em all!\n";
                     return write_min(i_record_to_update, iter_count, min_chunk, chunks, fname_sorted).then([&]{
-                        return upload_new_value(chunks, i_record_to_update).then([&]{
+                        // todo: check for end of record
+                        ++positions[i_record_to_update];
+                        return upload_new_value(positions, chunks, i_record_to_update).then([&]{
                             ++iter_count;
                             return ss::stop_iteration::no;
                         });
@@ -144,7 +160,7 @@ int main(int argc, char** argv) {
                         return ss::do_with(
                             convert_to_string(buffers),
                             [&](auto& chunks){
-                                return write_min(chunks);
+                                return sort_records(chunks);
                             }
                         );
                     });
