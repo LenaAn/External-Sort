@@ -81,15 +81,28 @@ ss::future<> write_min(size_t& i_record_to_update, int& iter_count, std::string&
     return write_chunk(iter_count, min_chunk, output_fname);
 }
 
-
+ss::future<> upload_first_chunks_of_records(std::vector<ss::temporary_buffer<char>>& buffers) {
+    return ss::do_with(
+        size_t(0),
+        [&](auto& i){
+            return ss::repeat([&](){
+                if (i == 3) {
+                    return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
+                }
+                return read_chunk(i, buffers[i], fname_records).then([&](size_t count_read){
+                    ++i;
+                    return ss::stop_iteration::no;
+                });
+            });
+        }
+    );
+}
 
 int main(int argc, char** argv) {
     using namespace std::chrono_literals;
     seastar::app_template app;
     try {
         app.run(argc, argv, []{
-            std::cout << "Hi there! I will try to merge records\n";
-
             auto buffers = std::vector<ss::temporary_buffer<char>>();
             for (int i = 0; i < 3; ++i){
                 buffers.emplace_back(ss::temporary_buffer<char>::aligned(aligned_size, aligned_size));
@@ -97,17 +110,8 @@ int main(int argc, char** argv) {
 
             return ss::do_with(
                 std::move(buffers),
-                size_t(0),
-                [](auto& buffers, auto& i){
-                    return ss::repeat([&](){
-                        if (i == 3) {
-                            return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
-                        }
-                        return read_chunk(i, buffers[i], fname_records).then([&](size_t count_read){
-                            ++i;
-                            return ss::stop_iteration::no;
-                        });
-                    }).then([&](){
+                [](auto& buffers){
+                    return upload_first_chunks_of_records(buffers).then([&](){
                         return ss::do_with(
                             size_t(0),
                             int(0),
@@ -134,7 +138,6 @@ int main(int argc, char** argv) {
                 }
             );
         });
-
     } catch(...) {
         std::cerr << "Failed to start application: "
                   << std::current_exception() << "\n";
