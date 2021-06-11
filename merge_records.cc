@@ -98,6 +98,29 @@ ss::future<> upload_first_chunks_of_records(std::vector<ss::temporary_buffer<cha
     );
 }
 
+ss::future<> sort_records(std::vector<std::string>& chunks){
+    return ss::do_with(
+        size_t(0),
+        int(0),
+        std::string(),
+        [&](auto& i_record_to_update, auto& iter_count, auto& min_chunk){
+            return ss::repeat([&](){
+                if (iter_count == 3) {
+                    return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
+                } else {
+                    std::cout << "gonna merge 'em all!\n";
+                    return write_min(i_record_to_update, iter_count, min_chunk, chunks, fname_sorted).then([&]{
+                        return upload_new_value(chunks, i_record_to_update).then([&]{
+                            ++iter_count;
+                            return ss::stop_iteration::no;
+                        });
+                    });
+                }
+            });
+        }
+    );
+}
+
 int main(int argc, char** argv) {
     using namespace std::chrono_literals;
     seastar::app_template app;
@@ -113,25 +136,9 @@ int main(int argc, char** argv) {
                 [](auto& buffers){
                     return upload_first_chunks_of_records(buffers).then([&](){
                         return ss::do_with(
-                            size_t(0),
-                            int(0),
-                            std::string(),
                             convert_to_string(buffers),
-                            [&](auto& i_record_to_update, auto& iter_count, auto& min_chunk, auto& chunks){
-                                return ss::repeat([&](){
-                                    if (iter_count == 3) {
-                                        return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
-                                    } else {
-                                        std::cout << "gonna merge 'em all!\n";
-                                        return write_min(i_record_to_update, iter_count, min_chunk, chunks, fname_sorted).then([&]{
-                                            return upload_new_value(chunks, i_record_to_update).then([&]{
-                                                ++iter_count;
-                                                return ss::stop_iteration::no;
-                                            });
-                                        });
-                                    }
-                                });
-
+                            [&](auto& chunks){
+                                return sort_records(chunks);
                             }
                         );
                     });
