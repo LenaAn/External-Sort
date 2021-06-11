@@ -62,14 +62,22 @@ std::vector<std::string> convert_to_string(std::vector<ss::temporary_buffer<char
     return chunks;
 }
 
-ss::future<> write_min(int& iter_count, std::string& min_chunk, std::vector<std::string>& chunks, const ss::sstring& output_fname){
-    min_chunk = chunks[0];
-    for (auto& chunk: chunks){
-        if (min_chunk.compare(chunk) > 0){
-            min_chunk = chunk;
+ss::future<> upload_new_value(std::vector<std::string>& chunks, size_t& i_record_to_update){
+    std::cout << "i_record_to_update: " << i_record_to_update << "\n";
+    return ss::make_ready_future();
+}
+
+ss::future<> write_min(size_t& i_record_to_update, int& iter_count, std::string& min_chunk, std::vector<std::string>& chunks, const ss::sstring& output_fname){
+    i_record_to_update = 0;
+    min_chunk = chunks[i_record_to_update];
+
+    for (size_t i = 0; i < chunks.size(); ++i){
+        if (min_chunk.compare(chunks[i]) > 0){
+            i_record_to_update = i;
+            min_chunk = chunks[i];
         }
     }
-    std::cout << "min_chunk: " << min_chunk << "\n";
+    // std::cout << "min_chunk: " << min_chunk << "\n";
     return write_chunk(iter_count, min_chunk, output_fname);
 }
 
@@ -101,18 +109,21 @@ int main(int argc, char** argv) {
                         });
                     }).then([&](){
                         return ss::do_with(
+                            size_t(0),
                             int(0),
                             std::string(),
                             convert_to_string(buffers),
-                            [&](auto& iter_count, auto& min_chunk, auto& chunks){
+                            [&](auto& i_record_to_update, auto& iter_count, auto& min_chunk, auto& chunks){
                                 return ss::repeat([&](){
                                     if (iter_count == 3) {
                                         return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                                     } else {
                                         std::cout << "gonna merge 'em all!\n";
-                                        return write_min(iter_count, min_chunk, chunks, fname_sorted).then([&]{
-                                            ++iter_count;
-                                            return ss::stop_iteration::no;
+                                        return write_min(i_record_to_update, iter_count, min_chunk, chunks, fname_sorted).then([&]{
+                                            return upload_new_value(chunks, i_record_to_update).then([&]{
+                                                ++iter_count;
+                                                return ss::stop_iteration::no;
+                                            });
                                         });
                                     }
                                 });
