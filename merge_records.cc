@@ -25,8 +25,8 @@ ss::sstring fname_records = "/root/seastar-starter/output.txt";
 ss::future<size_t> read_chunk(size_t& record_pos, ss::temporary_buffer<char>& buf, const ss::sstring& fname){
     return with_file(ss::open_file_dma(fname, ss::open_flags::ro),
         [&](ss::file& f) mutable {
-            std::cout << "opened file, gonna read on pos: " << record_pos << "\n";
-            return f.dma_read<char>(record_pos, buf.get_write(), aligned_size).then([](size_t count){
+            std::cout << "opened file, gonna read on pos: " << record_size*record_pos << "\n";
+            return f.dma_read<char>(record_size*record_pos, buf.get_write(), aligned_size).then([&](size_t count){
                 std::cout << "I've read " << count << "\n";
                 return ss::make_ready_future<size_t>(count);
             });
@@ -44,26 +44,25 @@ int main(int argc, char** argv) {
 
             auto buffers = std::vector<ss::temporary_buffer<char>>();
             for (int i = 0; i < 3; ++i){
-                buffers.emplace_back(ss::temporary_buffer<char>::aligned(aligned_size, record_size));
+                buffers.emplace_back(ss::temporary_buffer<char>::aligned(aligned_size, aligned_size));
             }
 
             return ss::do_with(
                 std::move(buffers),
-                size_t(0), size_t(record_size), size_t(2*record_size),
-                [](auto& buffers, auto& record_pos1, auto& record_pos2, auto& record_pos3){
-                    return read_chunk(record_pos1, buffers[0], fname_records).then([&](size_t count_read){
-                        std::cout << "my chunk: " << buffers[0].get() << "\n";
-                        return read_chunk(record_pos2, buffers[1], fname_records).then([&](size_t count_read2){
-                            std::cout << "my chunk2: " << buffers[1].get() << "\n";
-                            return read_chunk(record_pos3, buffers[2], fname_records).then([&](size_t count_read3){
-                                std::cout << "my chunk3: " << buffers[2].get() << "\n";
-                            });
+                size_t(0),
+                [](auto& buffers, auto& i){
+                    return ss::repeat([&](){
+                        if (i == 3) {
+                            return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
+                        }
+                        return read_chunk(i, buffers[i], fname_records).then([&](size_t count_read){
+                            std::cout << "my chunk: " << buffers[i].get() << "\n"; // prints more than one chunk, but that's ok
+                            ++i;
+                            return ss::stop_iteration::no;
                         });
                     });
                 }
             );
-
-            return ss::make_ready_future();
         });
 
     } catch(...) {
