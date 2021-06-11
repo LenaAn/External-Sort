@@ -35,12 +35,12 @@ ss::future<size_t> read_chunk(size_t& record_pos, ss::temporary_buffer<char>& bu
         });
 }
 
-ss::future<> write_chunk(std::string& chunk, ss::sstring fname) {
+ss::future<> write_chunk(int& iter_count, std::string& chunk, ss::sstring fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
         [&](ss::file f) mutable {
             std::cout << "Opened file. Gonna write the chunk:\n";
             std::cout << chunk << "\n";
-            return f.dma_write<char>(0, chunk.c_str(), aligned_size).then([&](size_t unused){
+            return f.dma_write<char>(iter_count*aligned_size, chunk.c_str(), aligned_size).then([&](size_t unused){
                 std::cout << "I wrote\n" << std::flush;
             });
     });
@@ -62,7 +62,7 @@ std::vector<std::string> convert_to_string(std::vector<ss::temporary_buffer<char
     return chunks;
 }
 
-ss::future<> merge_records(std::string& min_chunk, std::vector<std::string>& chunks, const ss::sstring& output_fname){
+ss::future<> write_min(int& iter_count, std::string& min_chunk, std::vector<std::string>& chunks, const ss::sstring& output_fname){
     min_chunk = chunks[0];
     for (auto& chunk: chunks){
         if (min_chunk.compare(chunk) > 0){
@@ -70,7 +70,7 @@ ss::future<> merge_records(std::string& min_chunk, std::vector<std::string>& chu
         }
     }
     std::cout << "min_chunk: " << min_chunk << "\n";
-    return write_chunk(min_chunk, output_fname);
+    return write_chunk(iter_count, min_chunk, output_fname);
 }
 
 
@@ -101,11 +101,22 @@ int main(int argc, char** argv) {
                         });
                     }).then([&](){
                         return ss::do_with(
+                            int(0),
                             std::string(),
                             convert_to_string(buffers),
-                            [&](auto& min_chunk, auto& chunks){
-                                std::cout << "gonna merge 'em all!\n";
-                                return merge_records(min_chunk, chunks, fname_sorted);
+                            [&](auto& iter_count, auto& min_chunk, auto& chunks){
+                                return ss::repeat([&](){
+                                    if (iter_count == 3) {
+                                        return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
+                                    } else {
+                                        std::cout << "gonna merge 'em all!\n";
+                                        return write_min(iter_count, min_chunk, chunks, fname_sorted).then([&]{
+                                            ++iter_count;
+                                            return ss::stop_iteration::no;
+                                        });
+                                    }
+                                });
+
                             }
                         );
                     });
