@@ -20,7 +20,11 @@ size_t chunks_in_record = RAM_AVAILABLE / aligned_size;
 size_t record_size = chunks_in_record*aligned_size;
 
 ss::sstring fname_records = "/root/seastar-starter/output.txt";
+ss::sstring fname_sorted = "/root/seastar-starter/sorted_output.txt";
 
+constexpr bool debug = false;
+
+// todo: write struct
 
 ss::future<size_t> read_chunk(size_t& record_pos, ss::temporary_buffer<char>& buf, const ss::sstring& fname){
     return with_file(ss::open_file_dma(fname, ss::open_flags::ro),
@@ -31,6 +35,44 @@ ss::future<size_t> read_chunk(size_t& record_pos, ss::temporary_buffer<char>& bu
                 return ss::make_ready_future<size_t>(count);
             });
         });
+}
+
+ss::future<> write_chunk(std::string& chunk, ss::sstring fname) {
+    return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
+        [&](ss::file f) mutable {
+            std::cout << "Opened file. Gonna write the chunk:\n";
+            std::cout << chunk << "\n";
+            return f.dma_write<char>(0, chunk.c_str(), aligned_size).then([&](size_t unused){
+                std::cout << "I wrote\n" << std::flush;
+            });
+    });
+}
+
+ss::future<> convert_to_string(std::vector<ss::temporary_buffer<char>>& buffers, std::vector<std::string>& chunks){
+    // todo: note: not optimal
+    for (int i = 0; i < 3; ++i) {
+        chunks[i] = std::string(buffers[i].get(), aligned_size);
+    }
+
+    if (debug){
+        std::cout << "I have chunks:\n";
+        for (auto& chunk : chunks) {
+            std::cout << chunk << "\n";
+        }
+        std::cout << "\n";
+    }
+    return ss::make_ready_future();
+}
+
+ss::future<> merge_records(std::string& min_chunk, std::vector<std::string>& chunks, const ss::sstring& output_fname){
+    min_chunk = chunks[0];
+    for (auto& chunk: chunks){
+        if (min_chunk.compare(chunk) > 0){
+            min_chunk = chunk;
+        }
+    }
+    std::cout << "min_chunk: " << min_chunk << "\n";
+    return write_chunk(min_chunk, output_fname);
 }
 
 
@@ -56,10 +98,21 @@ int main(int argc, char** argv) {
                             return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                         }
                         return read_chunk(i, buffers[i], fname_records).then([&](size_t count_read){
-                            std::cout << "my chunk: " << buffers[i].get() << "\n"; // prints more than one chunk, but that's ok
                             ++i;
                             return ss::stop_iteration::no;
                         });
+                    }).then([&](){
+                        // todo: maybe can do without passing vector of strings?
+                        return ss::do_with(
+                            std::string(),
+                            std::vector<std::string>(buffers.size()),
+                            [&](auto& min_chunk, auto& chunks){
+                                return convert_to_string(buffers, chunks).then([&]{
+                                    std::cout << "gonna merge 'em all!\n";
+                                    return merge_records(min_chunk, chunks, fname_sorted);
+                                });
+                            }
+                        );
                     });
                 }
             );
