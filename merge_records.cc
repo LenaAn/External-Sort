@@ -41,11 +41,11 @@ ss::future<size_t> read_chunk(size_t& record_pos, ss::temporary_buffer<char>& bu
 ss::future<> write_chunk(int& iter_count, std::string& chunk, ss::sstring fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
         [&](ss::file f) mutable {
-            std::cout << "Opened file. Gonna write the chunk:\n";
-            std::cout << chunk << "\n";
-            return f.dma_write<char>(iter_count*aligned_size, chunk.c_str(), aligned_size).then([&](size_t unused){
-                std::cout << "I wrote\n" << std::flush;
-            });
+            if (iter_count == 23000){
+                std::cout << "Opened file. Gonna write the chunk:\n";
+                std::cout << chunk << "\n";
+            }
+            return f.dma_write<char>(iter_count*aligned_size, chunk.c_str(), aligned_size).discard_result();
     });
 }
 
@@ -82,28 +82,43 @@ ss::future<> upload_first_chunks_of_records(std::vector<ss::temporary_buffer<cha
     );
 }
 
-ss::future<> write_min(size_t& i_record_to_update, int& iter_count, std::string& min_chunk, std::vector<std::string>& chunks, const ss::sstring& output_fname){
-    i_record_to_update = 0;
-    min_chunk = chunks[i_record_to_update];
-
+ss::future<bool> write_min(std::vector<bool>& pos_is_valid, size_t& i_record_to_update, int& iter_count, std::string& min_chunk, std::vector<std::string>& chunks, const ss::sstring& output_fname){
+    bool is_valid =  false;
     for (size_t i = 0; i < chunks.size(); ++i){
-        if (min_chunk.compare(chunks[i]) > 0){
-            i_record_to_update = i;
-            min_chunk = chunks[i];
+        if (pos_is_valid[i]){
+            if (!is_valid){
+                i_record_to_update = i;
+                min_chunk = chunks[i];
+                is_valid = true;
+            } else{
+                if (min_chunk.compare(chunks[i]) > 0){
+                    i_record_to_update = i;
+                    min_chunk = chunks[i];
+                }
+            }
         }
     }
-    // std::cout << "min_chunk: " << min_chunk << "\n";
-    return write_chunk(iter_count, min_chunk, output_fname);
+
+    if (!is_valid){
+        return ss::make_ready_future<bool>(false);
+    } else{
+        // std::cout << "min_chunk: " << min_chunk << "\n";
+        return write_chunk(iter_count, min_chunk, output_fname).then([]{
+            return ss::make_ready_future<bool>(true);
+        });
+    }
 }
 
-ss::future<> upload_new_value(std::vector<size_t>& positions, std::vector<std::string>& chunks, size_t& i_record_to_update){
-    std::cout << "i_record_to_update: " << i_record_to_update << "\n";
+ss::future<> upload_new_value(std::vector<bool>& pos_is_valid, std::vector<size_t>& positions, std::vector<std::string>& chunks, size_t& i_record_to_update){
+    if (!pos_is_valid[i_record_to_update]){
+        return ss::make_ready_future();
+    }
     return ss::do_with(
         ss::temporary_buffer<char>::aligned(aligned_size, aligned_size),
         [&](auto& buf){
             return with_file(ss::open_file_dma(fname_records, ss::open_flags::ro),
                 [&](ss::file& f) mutable {
-                    std::cout << "gonna upload new chunk for record: " << i_record_to_update << "\n";
+                    // std::cout << "gonna upload new chunk for record: " << i_record_to_update << "\n";
                     return f.dma_read<char>(i_record_to_update * record_size + positions[i_record_to_update] * aligned_size, buf.get_write(), aligned_size).then([&](size_t count){
                         // std::cout << "I've uploaded " << buf.get() << "\n";
                         chunks[i_record_to_update] = std::string(buf.get(), aligned_size);
@@ -116,28 +131,39 @@ ss::future<> upload_new_value(std::vector<size_t>& positions, std::vector<std::s
 
 ss::future<> sort_records(std::vector<std::string>& chunks){
     std::vector<size_t> positions(number_of_records_to_merge, 0);
+    std::vector<bool> pos_is_valid(number_of_records_to_merge, true);
 
     return ss::do_with(
         std::move(positions),
+        std::move(pos_is_valid),
         size_t(0),
         int(0),
         std::string(),
-        [&](auto& positions, auto& i_record_to_update, auto& iter_count, auto& min_chunk){
+        [&](auto& positions, auto& pos_is_valid, auto& i_record_to_update, auto& iter_count, auto& min_chunk){
             return ss::repeat([&](){
-                // todo: get rid of iter_count
-                if (iter_count == 3) {
-                    return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
-                } else {
-                    std::cout << "gonna merge 'em all!\n";
-                    return write_min(i_record_to_update, iter_count, min_chunk, chunks, fname_sorted).then([&]{
-                        // todo: check for end of record
+                return write_min(pos_is_valid, i_record_to_update, iter_count, min_chunk, chunks, fname_sorted).then([&](bool can_continue){
+                    if (!can_continue){
+                        std::cout << "all positions are invalid, returning\n";
+                        return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
+                    } else if (iter_count == 25000){
+                        std::cout << "iter_count == 25000, returning\n";
+                        return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
+                    } else {
                         ++positions[i_record_to_update];
-                        return upload_new_value(positions, chunks, i_record_to_update).then([&]{
+                        // todo: the last record will be shorter, account for that
+                        if (positions[i_record_to_update] >= chunks_in_record) {
+                            pos_is_valid[i_record_to_update] = false;
+                            std::cout << "positions[" << i_record_to_update << "] became invalid\n";
+                        }
+                        if (iter_count % 100 == 0){
+                            std::cout << "positions: " << positions[0] << ", " << positions[1] << ", " << positions[2] << "\n";
+                        }
+                        return upload_new_value(pos_is_valid, positions, chunks, i_record_to_update).then([&]{
                             ++iter_count;
                             return ss::stop_iteration::no;
                         });
-                    });
-                }
+                    }
+                });
             });
         }
     );
