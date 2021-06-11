@@ -1,20 +1,12 @@
 #include <seastar/core/app-template.hh>
 #include <seastar/core/reactor.hh>
-#include <seastar/core/sleep.hh>
-#include <boost/iterator/counting_iterator.hpp>
 #include <seastar/core/aligned_buffer.hh>
 #include <seastar/core/file.hh>
-#include <seastar/core/fstream.hh>
 #include <seastar/core/seastar.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/core/loop.hh>
-#include <seastar/util/log.hh>
-#include <seastar/util/tmp_file.hh>
-#include <seastar/core/file.hh>
 #include <seastar/core/iostream.hh>
-#include <seastar/core/shared_ptr.hh>
-#include <seastar/core/internal/api-level.hh>
 
 #include <iostream>
 #include <stdexcept>
@@ -32,7 +24,7 @@ constexpr bool debug = false;
 
 
 ss::sstring fname_output = "/root/seastar-starter/simple_output.txt";
-ss::sstring fname_input = "/root/seastar-starter/input.txt";
+ss::sstring fname_input = "/root/seastar-starter/simple_input.txt";
 
 ss::future<> write_chunk(size_t& record_pos, const int& i, std::string& chunk, ss::sstring fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
@@ -98,44 +90,45 @@ ss::future<size_t> read_record(size_t& record_pos, ss::temporary_buffer<char>& b
         });
 }
 
+ss::future<> sort_chunks_inside_records(){
+    std::cout << "I have " << RAM_AVAILABLE << " RAM\n";
+    return ss::do_with(
+        ss::temporary_buffer<char>::aligned(aligned_size, record_size),
+        size_t(0),
+        [](auto& buf, auto& record_pos){
+            return ss::repeat([&](){
+                return read_record(record_pos, buf, fname_input).then([&](auto count_read_ext){
+                    return ss::do_with(
+                        size_t(count_read_ext),
+                        [&](auto& count_read){
+                            if (count_read == 0) {
+                                return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
+                            } else {
+                                return ss::do_with(
+                                    sort_chunks(count_read, buf),
+                                    [&](auto& chunks){
+                                        return write_record(record_pos, chunks, fname_output).then([&]{
+                                            record_pos += count_read;
+                                            std::cout << "new record_pos: " << record_pos << "\n";
+                                        });
+                                    }
+                                ).then([]{
+                                    return ss::stop_iteration::no;
+                                });
+                            }
+                        }
+                    );
+                });
+            });
+        }
+    );
+}
+
 int main(int argc, char** argv) {
     using namespace std::chrono_literals;
     seastar::app_template app;
     try {
-        app.run(argc, argv, []{
-            std::cout << "I have " << RAM_AVAILABLE << " RAM\n";
-            return ss::do_with(
-                ss::temporary_buffer<char>::aligned(aligned_size, record_size),
-                size_t(0),
-                [](auto& buf, auto& record_pos){
-                    return ss::repeat([&](){
-                        return read_record(record_pos, buf, fname_input).then([&](auto count_read_ext){
-                            return ss::do_with(
-                                size_t(count_read_ext),
-                                [&](auto& count_read){
-                                    std::cout << "count_read: " << count_read << "\n";
-                                    if (count_read == 0) {
-                                        return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
-                                    } else {
-                                        return ss::do_with(
-                                            sort_chunks(count_read, buf),
-                                            [&](auto& chunks){
-                                                return write_record(record_pos, chunks, fname_output).then([&]{
-                                                    record_pos += count_read;
-                                                    std::cout << "new record_pos: " << record_pos << "\n";
-                                                });
-                                            }
-                                        ).then([]{
-                                            return ss::stop_iteration::no;
-                                        });
-                                    }
-                                }
-                            );
-                        });
-                    });
-                }
-            );
-        });
+        app.run(argc, argv, sort_chunks_inside_records);
     } catch(...) {
         std::cerr << "Failed to start application: "
                   << std::current_exception() << "\n";
