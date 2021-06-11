@@ -19,6 +19,9 @@ uint64_t RAM_AVAILABLE = 32284672;
 size_t chunks_in_record = RAM_AVAILABLE / aligned_size;
 size_t record_size = chunks_in_record*aligned_size;
 
+// todo: rethink that
+constexpr size_t number_of_records_to_merge = 3;
+
 ss::sstring fname_records = "/root/seastar-starter/output.txt";
 ss::sstring fname_sorted = "/root/seastar-starter/sorted_output.txt";
 
@@ -48,7 +51,7 @@ ss::future<> write_chunk(int& iter_count, std::string& chunk, ss::sstring fname)
 
 std::vector<std::string> convert_to_string(std::vector<ss::temporary_buffer<char>>& buffers){
     std::vector<std::string> chunks;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < buffers.size(); ++i) {
         chunks.emplace_back(std::string(buffers[i].get(), aligned_size));
     }
 
@@ -60,11 +63,6 @@ std::vector<std::string> convert_to_string(std::vector<ss::temporary_buffer<char
         std::cout << "\n";
     }
     return chunks;
-}
-
-ss::future<> upload_new_value(std::vector<std::string>& chunks, size_t& i_record_to_update){
-    std::cout << "i_record_to_update: " << i_record_to_update << "\n";
-    return ss::make_ready_future();
 }
 
 ss::future<> write_min(size_t& i_record_to_update, int& iter_count, std::string& min_chunk, std::vector<std::string>& chunks, const ss::sstring& output_fname){
@@ -86,7 +84,7 @@ ss::future<> upload_first_chunks_of_records(std::vector<ss::temporary_buffer<cha
         size_t(0),
         [&](auto& i){
             return ss::repeat([&](){
-                if (i == 3) {
+                if (i == number_of_records_to_merge) {
                     return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                 }
                 return read_chunk(i, buffers[i], fname_records).then([&](size_t count_read){
@@ -98,13 +96,21 @@ ss::future<> upload_first_chunks_of_records(std::vector<ss::temporary_buffer<cha
     );
 }
 
-ss::future<> sort_records(std::vector<std::string>& chunks){
+ss::future<> upload_new_value(std::vector<std::string>& chunks, size_t& i_record_to_update){
+    std::cout << "i_record_to_update: " << i_record_to_update << "\n";
+    return ss::make_ready_future();
+}
+
+ss::future<> write_min(std::vector<std::string>& chunks){
+    std::vector<size_t> current_pos_in_record(number_of_records_to_merge, 0);
+
     return ss::do_with(
         size_t(0),
         int(0),
         std::string(),
         [&](auto& i_record_to_update, auto& iter_count, auto& min_chunk){
             return ss::repeat([&](){
+                // todo: get rid of iter_count
                 if (iter_count == 3) {
                     return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                 } else {
@@ -127,7 +133,7 @@ int main(int argc, char** argv) {
     try {
         app.run(argc, argv, []{
             auto buffers = std::vector<ss::temporary_buffer<char>>();
-            for (int i = 0; i < 3; ++i){
+            for (int i = 0; i < number_of_records_to_merge; ++i){
                 buffers.emplace_back(ss::temporary_buffer<char>::aligned(aligned_size, aligned_size));
             }
 
@@ -138,7 +144,7 @@ int main(int argc, char** argv) {
                         return ss::do_with(
                             convert_to_string(buffers),
                             [&](auto& chunks){
-                                return sort_records(chunks);
+                                return write_min(chunks);
                             }
                         );
                     });
