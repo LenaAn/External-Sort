@@ -15,15 +15,15 @@
 namespace ss = seastar;
 
 constexpr size_t aligned_size = 4096;
-uint64_t RAM_AVAILABLE = 32284672;
-size_t chunks_in_record = RAM_AVAILABLE / aligned_size;
+// uint64_t RAM_AVAILABLE = 32284672;
+size_t chunks_in_record = 100;
 size_t record_size = chunks_in_record*aligned_size;
 
 // todo: rethink that
-size_t number_of_records_to_merge = 5;
+size_t number_of_records_to_merge = 10;
 
-ss::sstring fname_records = "/root/seastar-starter/simple_output.txt";
-ss::sstring fname_sorted = "/root/seastar-starter/simple_sorted_output.txt";
+ss::sstring fname_records = "/mnt/volume_ams3_04/simple_output_small_record.txt";
+ss::sstring fname_sorted = "/mnt/volume_ams3_04/simple_sorted_output.txt";
 
 constexpr bool debug = false;
 
@@ -148,7 +148,7 @@ ss::future<> sort_records(size_t& offset, std::vector<std::string>& chunks, std:
                         // the last record may be shorter, but upload_new_value will handle pos_is_valid for that
                         if (positions[i_record_to_update] >= chunks_in_record) {
                             pos_is_valid[i_record_to_update] = false;
-                            std::cout << "positions[" << i_record_to_update << "] became invalid\n";
+                            // std::cout << "positions[" << i_record_to_update << "] became invalid\n";
                         }
                         if (iter_count % 1000 == 0){
                             std::cout << "positions: " << positions[0] << ", " << positions[1] << ", " << positions[2] << "\n";
@@ -190,21 +190,21 @@ ss::future<bool> merge_k_records(size_t& offset){
     );
 }
 
-
-ss::future<> merge_all_records(){
+ss::future<> merge_all_records_fixed_size(bool& should_increase_record){
     return ss::do_with(
         size_t(0),
-        [](auto& offset){ // offset in bytes
+        [&](auto& offset){ // offset in bytes
             return ss::repeat(
-                [&](){
+                [&]{
                     return merge_k_records(offset).then([&](auto can_continue){
-                        if (not can_continue) {
-                            std::cout << "not gonna continue\n";
-                            return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
-                        } else {
+                        if (can_continue) {
+                            should_increase_record = true;
                             offset += number_of_records_to_merge * chunks_in_record * aligned_size;
                             std::cout << "gonna continue with new offset:" <<  offset << "\n";
                             return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::no);
+                        } else {
+                            std::cout << "not gonna continue\n";
+                            return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                         }
                     });
                 }
@@ -213,11 +213,39 @@ ss::future<> merge_all_records(){
     );
 }
 
+ss::future<> sort(){
+    return ss::do_with(
+        bool(false),
+        [](auto& should_increase_record){
+            return ss::repeat(
+                [&]{
+                    return merge_all_records_fixed_size(should_increase_record).then([&]{
+                        if (should_increase_record) {
+                            should_increase_record = false;
+                            // todo: change the output/input files
+                            chunks_in_record *= number_of_records_to_merge;
+                            record_size = chunks_in_record*aligned_size;
+                            std::cout << "Increasing record size to: " << record_size << "\n";
+                            std::swap(fname_records, fname_sorted);
+                            std::cout << "gonna write output to: " << fname_sorted << "\n";
+                            return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::no);
+                        } else {
+                            std::cout << "Not gonna increase record size\n";
+                            return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);                            
+                        }
+                    });
+                }
+            );
+        }
+    );
+}
+
+
 int main(int argc, char** argv) {
     using namespace std::chrono_literals;
     seastar::app_template app;
     try {
-        app.run(argc, argv, merge_all_records);
+        app.run(argc, argv, sort);
     } catch(...) {
         std::cerr << "Failed to start application: "
                   << std::current_exception() << "\n";
