@@ -22,8 +22,8 @@ size_t record_size = chunks_in_record*aligned_size;
 // todo: rethink that
 constexpr size_t number_of_records_to_merge = 3;
 
-ss::sstring fname_records = "/root/seastar-starter/output.txt";
-ss::sstring fname_sorted = "/root/seastar-starter/sorted_output.txt";
+ss::sstring fname_records = "/root/seastar-starter/simple_output.txt";
+ss::sstring fname_sorted = "/root/seastar-starter/simple_sorted_output.txt";
 
 constexpr bool debug = false;
 
@@ -65,7 +65,7 @@ std::vector<std::string> convert_to_string(std::vector<ss::temporary_buffer<char
     return chunks;
 }
 
-ss::future<> upload_first_chunks_of_records(std::vector<ss::temporary_buffer<char>>& buffers) {
+ss::future<> upload_first_chunks_of_records(std::vector<ss::temporary_buffer<char>>& buffers, std::vector<bool>& pos_is_valid) {
     return ss::do_with(
         size_t(0),
         [&](auto& i){
@@ -74,6 +74,10 @@ ss::future<> upload_first_chunks_of_records(std::vector<ss::temporary_buffer<cha
                     return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                 }
                 return read_chunk(i, buffers[i], fname_records).then([&](size_t count_read){
+                    // todo: not try to read after received 0
+                    if (count_read == 0) {
+                        pos_is_valid[i] = false;
+                    }
                     ++i;
                     return ss::stop_iteration::no;
                 });
@@ -120,8 +124,12 @@ ss::future<> upload_new_value(std::vector<bool>& pos_is_valid, std::vector<size_
                 [&](ss::file& f) mutable {
                     // std::cout << "gonna upload new chunk for record: " << i_record_to_update << "\n";
                     return f.dma_read<char>(i_record_to_update * record_size + positions[i_record_to_update] * aligned_size, buf.get_write(), aligned_size).then([&](size_t count){
-                        // std::cout << "I've uploaded " << buf.get() << "\n";
-                        chunks[i_record_to_update] = std::string(buf.get(), aligned_size);
+                        if (count == 0){
+                            pos_is_valid[i_record_to_update] = false;
+                        } else {
+                            // std::cout << "I've uploaded " << buf.get() << "\n";
+                            chunks[i_record_to_update] = std::string(buf.get(), aligned_size);
+                        }
                     });
                 }
             );
@@ -129,21 +137,19 @@ ss::future<> upload_new_value(std::vector<bool>& pos_is_valid, std::vector<size_
     );
 }
 
-ss::future<> sort_records(std::vector<std::string>& chunks){
+ss::future<> sort_records(std::vector<std::string>& chunks, std::vector<bool>& pos_is_valid){
     std::vector<size_t> positions(number_of_records_to_merge, 0);
-    std::vector<bool> pos_is_valid(number_of_records_to_merge, true);
 
     return ss::do_with(
         std::move(positions),
-        std::move(pos_is_valid),
         size_t(0),
         int(0),
         std::string(),
-        [&](auto& positions, auto& pos_is_valid, auto& i_record_to_update, auto& iter_count, auto& min_chunk){
+        [&](auto& positions, auto& i_record_to_update, auto& iter_count, auto& min_chunk){
             return ss::repeat([&](){
                 return write_min(pos_is_valid, i_record_to_update, iter_count, min_chunk, chunks, fname_sorted).then([&](bool can_continue){
                     if (!can_continue){
-                        std::cout << "all positions are invalid, returning\n";
+                        std::cout << "all positions are invalid, returning. iter_count: " << iter_count << "\n";
                         return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                     } else if (iter_count == 25000){
                         std::cout << "iter_count == 25000, returning\n";
@@ -178,15 +184,17 @@ int main(int argc, char** argv) {
             for (int i = 0; i < number_of_records_to_merge; ++i){
                 buffers.emplace_back(ss::temporary_buffer<char>::aligned(aligned_size, aligned_size));
             }
+            std::vector<bool> pos_is_valid(number_of_records_to_merge, true);
 
             return ss::do_with(
                 std::move(buffers),
-                [](auto& buffers){
-                    return upload_first_chunks_of_records(buffers).then([&](){
+                std::move(pos_is_valid),
+                [](auto& buffers, auto& pos_is_valid){
+                    return upload_first_chunks_of_records(buffers, pos_is_valid).then([&](){
                         return ss::do_with(
                             convert_to_string(buffers),
                             [&](auto& chunks){
-                                return sort_records(chunks);
+                                return sort_records(chunks, pos_is_valid);
                             }
                         );
                     });
