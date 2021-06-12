@@ -22,8 +22,8 @@ size_t record_size = chunks_in_record*aligned_size;
 // todo: rethink that
 size_t number_of_records_to_merge = 5;
 
-ss::sstring fname_records = "/root/seastar-starter/output.txt";
-ss::sstring fname_sorted = "/root/seastar-starter/sorted_output.txt";
+ss::sstring fname_records = "/root/seastar-starter/simple_output.txt";
+ss::sstring fname_sorted = "/root/seastar-starter/simple_sorted_output.txt";
 
 constexpr bool debug = false;
 
@@ -145,12 +145,12 @@ ss::future<> sort_records(size_t& offset, std::vector<std::string>& chunks, std:
                         return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                     } else {
                         ++positions[i_record_to_update];
-                        // todo: the last record will be shorter, account for that
+                        // the last record may be shorter, but upload_new_value will handle pos_is_valid for that
                         if (positions[i_record_to_update] >= chunks_in_record) {
                             pos_is_valid[i_record_to_update] = false;
                             std::cout << "positions[" << i_record_to_update << "] became invalid\n";
                         }
-                        if (iter_count % 10000 == 0){
+                        if (iter_count % 1000 == 0){
                             std::cout << "positions: " << positions[0] << ", " << positions[1] << ", " << positions[2] << "\n";
                         }
                         return upload_new_value(offset, pos_is_valid, positions, chunks, i_record_to_update).then([&]{
