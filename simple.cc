@@ -15,14 +15,11 @@
 namespace ss = seastar;
 
 constexpr size_t aligned_size = 4096;
-// todo: I believe I can actually use less without overhelming system
 uint64_t RAM_AVAILABLE = ss::memory::stats().free_memory();
 
 size_t chunks_in_record = RAM_AVAILABLE / aligned_size;
 size_t record_size = chunks_in_record*aligned_size;
 constexpr bool debug = false;
-
-ss::sstring fname_output = "/mnt/volume_ams3_04/simple_output_small_record.txt";
 
 ss::future<> write_chunk(size_t& record_pos, const int& i, std::string& chunk, const ss::sstring& fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
@@ -36,7 +33,7 @@ ss::future<> write_chunk(size_t& record_pos, const int& i, std::string& chunk, c
 }
 
 // todo: move vector of strings??
-ss::future<> write_record(size_t& record_pos, std::vector<std::string>& chunks, const ss::sstring& fname) {
+ss::future<> write_record(size_t& record_pos, std::vector<std::string>& chunks, const ss::sstring& tmp_file) {
     return ss::do_with(
         int(0),
         [&](auto& i){
@@ -45,7 +42,7 @@ ss::future<> write_record(size_t& record_pos, std::vector<std::string>& chunks, 
                     return i == chunks.size();
                 },
                 [&]{
-                    return write_chunk(record_pos, i, chunks[i], fname_output).then([&]{
+                    return write_chunk(record_pos, i, chunks[i], tmp_file).then([&]{
                         ++i;
                     });
                 }
@@ -81,7 +78,7 @@ ss::future<size_t> read_record(size_t& record_pos, ss::temporary_buffer<char>& b
         });
 }
 
-ss::future<> sort_chunks_inside_records(const ss::sstring& fname_input){
+ss::future<> sort_chunks_inside_records(const ss::sstring& fname_input, const ss::sstring& tmp_file){
     std::cout << "I have " << RAM_AVAILABLE << " RAM\n";
     std::cout << "fname_input: " << fname_input << "\n";
     return ss::do_with(
@@ -99,7 +96,7 @@ ss::future<> sort_chunks_inside_records(const ss::sstring& fname_input){
                                 return ss::do_with(
                                     sort_chunks(count_read, buf),
                                     [&](auto& chunks){
-                                        return write_record(record_pos, chunks, fname_output).then([&]{
+                                        return write_record(record_pos, chunks, tmp_file).then([&]{
                                             record_pos += count_read;
                                         });
                                     }
@@ -133,10 +130,13 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Input file name not provided.");
             }
 
+
             return ss::do_with(
                 ss::sstring(filenames[0]),
-                [](auto& fname_input){
-                    return sort_chunks_inside_records(fname_input);
+                // todo: generate tmp file name
+                ss::sstring("/mnt/volume_ams3_04/simple_output_small_record.txt"),
+                [](auto& fname_input, auto& tmp_file){
+                    return sort_chunks_inside_records(fname_input, tmp_file);
                 });
         });
     } catch(...) {
