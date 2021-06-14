@@ -7,6 +7,7 @@
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/core/loop.hh>
 #include <seastar/core/iostream.hh>
+#include <seastar/util/tmp_file.hh>
 
 #include <iostream>
 #include <stdexcept>
@@ -243,11 +244,15 @@ int main(int argc, char** argv) {
     seastar::app_template app;
     try {
         app.run(argc, argv, [&]{
-            return ss::do_with(
-                ss::sstring("/mnt/volume_ams3_04/simple_output_small_record.txt"),
-                ss::sstring("/mnt/volume_ams3_04/simple_sorted_output.txt"),
-                [](auto& tmp_file, auto& tmp_output){
-                    return merge_records(tmp_file, tmp_output);
+            return ss::tmp_dir::do_with(
+                [](auto& t) {
+                    return ss::do_with(
+                        ss::sstring((t.get_path() / "tmp_file").native()),
+                        ss::sstring((t.get_path() / "tmp_output").native()),
+                        [](auto& tmp_file, auto& tmp_output){
+                            return merge_records(tmp_file, tmp_output);
+                        }
+                    );
                 }
             );
         });
