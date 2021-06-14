@@ -77,8 +77,8 @@ ss::future<size_t> read_record(size_t& record_pos, ss::temporary_buffer<char>& b
 }
 
 ss::future<> sort_chunks_inside_records(const ss::sstring& fname_input, const ss::sstring& tmp_file){
-    std::cout << "I have " << RAM_AVAILABLE << " RAM\n";
-    std::cout << "fname_input: " << fname_input << "\n";
+    std::cout << "Starting to sort chunks in records...\n";
+    std::cout << "Using " << RAM_AVAILABLE << " RAM\n";
     return ss::do_with(
         ss::temporary_buffer<char>::aligned(aligned_size, record_size),
         size_t(0),
@@ -205,16 +205,12 @@ ss::future<> sort_records(size_t& offset, std::vector<std::string>& chunks, std:
             return ss::repeat([&](){
                 return write_min(offset, pos_is_valid, i_record_to_update, iter_count, min_chunk, chunks, queue, tmp_output).then([&](bool can_continue){
                     if (!can_continue){
-                        std::cout << "all positions are invalid, returning. iter_count: " << iter_count << "\n";
                         return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                     } else {
                         ++positions[i_record_to_update];
                         // the last record may be shorter, but upload_new_value will handle pos_is_valid for that
                         if (positions[i_record_to_update] >= chunks_in_record) {
                             pos_is_valid[i_record_to_update] = false;
-                        }
-                        if (iter_count % 1000 == 0){
-                            std::cout << "positions: " << positions[0] << ", " << positions[1] << ", " << positions[2] << "\n";
                         }
                         return upload_new_value(offset, pos_is_valid, positions, chunks, queue, i_record_to_update, tmp_file).then([&]{
                             ++iter_count;
@@ -263,10 +259,10 @@ ss::future<> merge_all_records_fixed_size(bool& should_increase_record, const ss
                         if (can_continue) {
                             should_increase_record = true;
                             offset += number_of_records_to_merge * chunks_in_record * aligned_size;
-                            std::cout << "gonna continue with new offset:" <<  offset << "\n";
+                            std::cout << "Continuing merging records of size " << record_size << " with new offset:" <<  offset << "\n";
                             return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::no);
                         } else {
-                            std::cout << "not gonna continue\n";
+                            std::cout << "Merged all records of size " << record_size << "\n";
                             return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                         }
                     });
@@ -277,8 +273,7 @@ ss::future<> merge_all_records_fixed_size(bool& should_increase_record, const ss
 }
 
 ss::future<> merge_records(ss::sstring& tmp_file, ss::sstring& tmp_output, const ss::sstring& fname_output){
-    std::cout << "tmp_file: " << tmp_file << "\n";
-    std::cout << "tmp_output: " << tmp_output << "\n";
+    std::cout << "Starting to merge records...\n";
     return ss::do_with(
         bool(false),
         [&](auto& should_increase_record){
@@ -291,11 +286,9 @@ ss::future<> merge_records(ss::sstring& tmp_file, ss::sstring& tmp_output, const
                             record_size = chunks_in_record*aligned_size;
                             std::cout << "Increasing record size to: " << record_size << "\n";
                             std::swap(tmp_file, tmp_output);
-                            std::cout << "gonna write output to: " << tmp_output << "\n";
                             return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::no);
                         } else {
-                            std::cout << "Not gonna increase record size\n";
-
+                            std::cout << "Copying output from tmp file to " << fname_output << "\n";
                             fs::copy(tmp_output.c_str(), fname_output.c_str());
                             return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                         }
