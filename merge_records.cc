@@ -13,7 +13,11 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <fstream>
+#include <filesystem>
+
 namespace ss = seastar;
+namespace fs = std::filesystem;
 
 constexpr size_t aligned_size = 4096;
 uint64_t RAM_AVAILABLE = ss::memory::stats().free_memory();
@@ -211,7 +215,7 @@ ss::future<> merge_all_records_fixed_size(bool& should_increase_record, const ss
     );
 }
 
-ss::future<> merge_records(ss::sstring& tmp_file, ss::sstring& tmp_output){
+ss::future<> merge_records(ss::sstring& tmp_file, ss::sstring& tmp_output, const ss::sstring& real_output){
     return ss::do_with(
         bool(false),
         [&](auto& should_increase_record){
@@ -229,6 +233,8 @@ ss::future<> merge_records(ss::sstring& tmp_file, ss::sstring& tmp_output){
                             return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::no);
                         } else {
                             std::cout << "Not gonna increase record size\n";
+
+                            fs::copy(tmp_output.c_str(), real_output.c_str());
                             return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                         }
                     });
@@ -249,8 +255,9 @@ int main(int argc, char** argv) {
                     return ss::do_with(
                         ss::sstring((t.get_path() / "tmp_file").native()),
                         ss::sstring((t.get_path() / "tmp_output").native()),
-                        [](auto& tmp_file, auto& tmp_output){
-                            return merge_records(tmp_file, tmp_output);
+                        ss::sstring("./output.txt"),
+                        [](auto& tmp_file, auto& tmp_output, auto& real_output){
+                            return merge_records(tmp_file, tmp_output, real_output);
                         }
                     );
                 }
