@@ -30,6 +30,8 @@ struct enumeratedChunk {
 };
 
 inline bool operator> (const enumeratedChunk& lhs, const enumeratedChunk& rhs){ return lhs.chunk > rhs.chunk; }
+using chunkQueue = std::priority_queue<enumeratedChunk, std::vector<enumeratedChunk>, std::greater<enumeratedChunk>>;
+
 
 ss::future<> write_chunk(const size_t& record_pos, const int& i, const std::string& chunk, const ss::sstring& fname) {
     return with_file(ss::open_file_dma(fname, ss::open_flags::wo | ss::open_flags::create),
@@ -110,7 +112,7 @@ ss::future<> sort_chunks_inside_records(const ss::sstring& fname_input, const ss
     );
 }
 
-// ==============Watershed==============
+// ==============Code used in merging phase==============
 
 ss::future<size_t> read_chunk(size_t& offset, size_t& record_pos, ss::temporary_buffer<char>& buf, const ss::sstring& fname){
     return with_file(ss::open_file_dma(fname, ss::open_flags::ro),
@@ -121,12 +123,12 @@ ss::future<size_t> read_chunk(size_t& offset, size_t& record_pos, ss::temporary_
         });
 }
 
-std::vector<std::string> convert_to_string(std::vector<ss::temporary_buffer<char>>& buffers){
-    std::vector<std::string> chunks;
-    for (int i = 0; i < buffers.size(); ++i) {
-        chunks.emplace_back(std::string(buffers[i].get(), aligned_size));
+chunkQueue convert_to_string(std::vector<ss::temporary_buffer<char>>& buffers){
+    chunkQueue queue;
+    for (size_t i = 0; i < buffers.size(); ++i) {
+        queue.push({i, std::string(buffers[i].get(), aligned_size)});
     }
-    return chunks;
+    return queue;
 }
 
 ss::future<> upload_first_chunks_of_records(bool& chunks_are_full, size_t& offset, std::vector<ss::temporary_buffer<char>>& buffers, std::vector<bool>& pos_is_valid, const ss::sstring& tmp_file) {
@@ -150,7 +152,7 @@ ss::future<> upload_first_chunks_of_records(bool& chunks_are_full, size_t& offse
     );
 }
 
-ss::future<bool> write_min(size_t& offset, std::vector<bool>& pos_is_valid, size_t& i_record_to_update, int& iter_count, std::string& min_chunk, std::vector<std::string>& chunks, auto& queue, const ss::sstring& tmp_output){
+ss::future<bool> write_min(size_t& offset, std::vector<bool>& pos_is_valid, size_t& i_record_to_update, int& iter_count, std::string& min_chunk, chunkQueue& queue, const ss::sstring& tmp_output){
     if (queue.empty()){
         return ss::make_ready_future<bool>(false);
     } else {
@@ -163,7 +165,7 @@ ss::future<bool> write_min(size_t& offset, std::vector<bool>& pos_is_valid, size
     }
 }
 
-ss::future<> upload_new_value(size_t& offset, std::vector<bool>& pos_is_valid, std::vector<size_t>& positions, std::vector<std::string>& chunks, auto& queue, size_t& i_record_to_update, const ss::sstring& tmp_file){
+ss::future<> upload_new_value(size_t& offset, std::vector<bool>& pos_is_valid, std::vector<size_t>& positions, chunkQueue& queue, size_t& i_record_to_update, const ss::sstring& tmp_file){
     if (!pos_is_valid[i_record_to_update]){
         return ss::make_ready_future();
     }
@@ -176,8 +178,7 @@ ss::future<> upload_new_value(size_t& offset, std::vector<bool>& pos_is_valid, s
                         if (count == 0){
                             pos_is_valid[i_record_to_update] = false;
                         } else {
-                            chunks[i_record_to_update] = std::string(buf.get(), aligned_size);
-                            queue.push({i_record_to_update, chunks[i_record_to_update]});
+                            queue.push({i_record_to_update, std::string(buf.get(), aligned_size)});
                         }
                     });
                 }
@@ -186,14 +187,8 @@ ss::future<> upload_new_value(size_t& offset, std::vector<bool>& pos_is_valid, s
     );
 }
 
-ss::future<> sort_records(size_t& offset, std::vector<std::string>& chunks, std::vector<bool>& pos_is_valid, const ss::sstring& tmp_file, const ss::sstring& tmp_output){
+ss::future<> sort_records(size_t& offset, chunkQueue& queue, std::vector<bool>& pos_is_valid, const ss::sstring& tmp_file, const ss::sstring& tmp_output){
     std::vector<size_t> positions(number_of_records_to_merge, 0);
-    std::priority_queue<enumeratedChunk, std::vector<enumeratedChunk>, std::greater<enumeratedChunk>> queue;
-    for (size_t i = 0; i < chunks.size(); ++i){
-        if (pos_is_valid[i]){
-            queue.push({i, chunks[i]});
-        }
-    }
 
     return ss::do_with(
         std::move(positions),
@@ -203,7 +198,7 @@ ss::future<> sort_records(size_t& offset, std::vector<std::string>& chunks, std:
         std::string(),
         [&](auto& positions, auto& queue, auto& i_record_to_update, auto& iter_count, auto& min_chunk){
             return ss::repeat([&](){
-                return write_min(offset, pos_is_valid, i_record_to_update, iter_count, min_chunk, chunks, queue, tmp_output).then([&](bool can_continue){
+                return write_min(offset, pos_is_valid, i_record_to_update, iter_count, min_chunk, queue, tmp_output).then([&](bool can_continue){
                     if (!can_continue){
                         return ss::make_ready_future<ss::stop_iteration>(ss::stop_iteration::yes);
                     } else {
@@ -212,7 +207,7 @@ ss::future<> sort_records(size_t& offset, std::vector<std::string>& chunks, std:
                         if (positions[i_record_to_update] >= chunks_in_record) {
                             pos_is_valid[i_record_to_update] = false;
                         }
-                        return upload_new_value(offset, pos_is_valid, positions, chunks, queue, i_record_to_update, tmp_file).then([&]{
+                        return upload_new_value(offset, pos_is_valid, positions, queue, i_record_to_update, tmp_file).then([&]{
                             ++iter_count;
                             return ss::stop_iteration::no;
                         });
@@ -238,8 +233,8 @@ ss::future<bool> merge_k_records(size_t& offset, const ss::sstring& tmp_file, co
             return upload_first_chunks_of_records(chunks_are_full, offset, buffers, pos_is_valid, tmp_file).then([&](){
                 return ss::do_with(
                     convert_to_string(buffers),
-                    [&](auto& chunks){
-                        return sort_records(offset, chunks, pos_is_valid, tmp_file, tmp_output).then([&]{
+                    [&](auto& queue){
+                        return sort_records(offset, queue, pos_is_valid, tmp_file, tmp_output).then([&]{
                             return chunks_are_full;
                         });
                     }
